@@ -1,0 +1,1 @@
+37 3 * * * root /usr/local/sbin/goldenrock-backup >> /var/log/goldenrock-backup.log 2>&1

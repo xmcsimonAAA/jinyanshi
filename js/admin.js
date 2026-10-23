@@ -4,7 +4,18 @@
     const DEFAULT_CFG = window.GOLDENROCK_CONFIG || {};
     const OVERRIDE_KEY = 'GOLDENROCK_CONFIG_OVERRIDE';
     const AUTH_KEY = 'GOLDENROCK_ADMIN_AUTH';
+    const SERVER_CONFIGS = window.GOLDENROCK_SERVER_CONFIGS || {};
+    const API_ROOT = '/api';
+    const LANG_OPTIONS = ['zh_CN', 'zh_TW', 'en'];
 
+    let currentLang = (function () {
+        try { return LANG_OPTIONS.indexOf(localStorage.getItem('GR_ADMIN_LANG')) >= 0 ? localStorage.getItem('GR_ADMIN_LANG') : 'zh_CN'; } catch (e) { return 'zh_CN'; }
+    })();
+    let serverMode = false;
+    let csrfToken = '';
+    let serverConfigs = Object.assign({}, SERVER_CONFIGS);
+    let notificationSettings = {};
+    let serverMessages = null;
     let currentCfg = loadConfig();
     let dirty = false;
     let activeTab = 'site';
@@ -22,6 +33,7 @@
         { id: 'cta',         label: '行动召唤',   icon: ctaIcon(),    desc: '金色 CTA 大卡片的标题、描述、双按钮' },
         { id: 'contact',     label: '联系我们',   icon: contactIcon(),desc: '联系方式卡片、表单文案、下拉服务选项' },
         { id: 'messages',    label: '留言咨询',   icon: messagesIcon(),desc: '用户留言咨询列表 — 查看 / 搜索 / 标记已读 / 标记已回复 / 删除 / 导出。共 0 条，未处理 0 条。' },
+        { id: 'notifications', label: '通知设置', icon: notificationIcon(), desc: '收件邮箱、SMTP 发件设置和管理员密码' },
         { id: 'footer',      label: '页脚信息',   icon: footerIcon(), desc: '免责声明、版权、法律链接、品牌简介' },
         { id: 'legalPrivacy',    label: '隐私政策',   icon: legalPrivacyIcon(),    desc: '公司如何收集使用共享存储用户信息；Cookie、主体权利、更新与联系方式等完整条款' },
         { id: 'legalTerms',      label: '服务条款',   icon: legalTermsIcon(),      desc: '开户资格、账户安全、风险披露、费用税费、行为准则、争议解决等条款' },
@@ -44,6 +56,7 @@
     function legalTermsIcon() { return '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 3h9l4 4v10a1 1 0 01-1 1H5a1 1 0 01-1-1V4a1 1 0 011-1z"/><path d="M14 3v4h4"/><path d="M7.5 10h7M7.5 13h5M7.5 16h6"/><path d="M7 7.5l1 1 2.5-2.5"/></svg>'; }
     function legalDisclaimerIcon() { return '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 2l7 3v6c0 4-3 7-7 8-4-1-7-4-7-8V5l7-3z"/><path d="M10 7v4.5"/><circle cx="10" cy="13.5" r="1" fill="currentColor"/></svg>'; }
     function messagesIcon() { return '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 3h12a1 1 0 011 1v9a1 1 0 01-1 1H7l-3 3V4a1 1 0 011-1z"/><path d="M7 8h6M7 11h4"/></svg>'; }
+    function notificationIcon() { return '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 14h12l-1.2-1.8V8a4.8 4.8 0 00-9.6 0v4.2L4 14z"/><path d="M8 16.5a2.2 2.2 0 004 0"/><path d="M10 2v1"/></svg>'; }
 
     function buildFieldSchemas() {
         return {
@@ -60,7 +73,7 @@
                 { key: 'brand.taglinePrimary',    label: '首屏主标语',   type: 'text' },
                 { key: 'brand.taglineSecondary',  label: '首屏金色标语', type: 'text' },
                 { sec: '后台安全', desc: '登录密码与权限' },
-                { key: 'admin.loginPassword', label: '管理员登录密码', type: 'text', hint: '请使用复杂密码，避免默认 admin123' }
+                { sec: '管理员账号', desc: '请到左侧「通知设置」修改服务器登录密码' }
             ],
             hero: [
                 { sec: '文案与按钮', desc: '首屏中央核心区域' },
@@ -282,17 +295,69 @@
         };
     }
 
+    function apiRequest(path, options, includeCsrf) {
+        options = options || {};
+        const headers = Object.assign({}, options.headers || {});
+        if (options.body && typeof options.body !== 'string') {
+            options.body = JSON.stringify(options.body);
+            headers['Content-Type'] = 'application/json';
+        }
+        if (includeCsrf && csrfToken) headers['X-CSRF-Token'] = csrfToken;
+        options.headers = headers;
+        options.credentials = 'same-origin';
+        return fetch(API_ROOT + path, options).then(function (res) {
+            return res.text().then(function (raw) {
+                var data = {};
+                try { data = raw ? JSON.parse(raw) : {}; } catch (e) {}
+                if (!res.ok) {
+                    var err = new Error(data.error || ('HTTP ' + res.status));
+                    err.status = res.status;
+                    throw err;
+                }
+                return data;
+            });
+        });
+    }
+
+    function detectServer() {
+        return fetch(API_ROOT + '/health', { credentials: 'same-origin', cache: 'no-store' })
+            .then(function (res) { return res.ok; })
+            .catch(function () { return false; });
+    }
+
+    function languageBaseConfig(lang) {
+        var base = cloneJSON(DEFAULT_CFG);
+        var dict = window.I18N && window.I18N.DICT ? window.I18N.DICT[lang] : null;
+        if (dict) {
+            Object.keys(dict).forEach(function (key) {
+                if (key !== 'ui') base[key] = deepMerge(base[key], dict[key]);
+            });
+        }
+        return base;
+    }
+
     function loadConfig() {
-        const base = cloneJSON(DEFAULT_CFG);
+        if (serverConfigs[currentLang] && typeof serverConfigs[currentLang] === 'object') {
+            return cloneJSON(serverConfigs[currentLang]);
+        }
+        const base = languageBaseConfig(currentLang);
         try {
-            const s = localStorage.getItem(OVERRIDE_KEY);
+            const key = OVERRIDE_KEY + '_' + currentLang;
+            const s = localStorage.getItem(key) || (currentLang === 'zh_CN' ? localStorage.getItem(OVERRIDE_KEY) : null);
             if (s) return deepMerge(base, JSON.parse(s));
         } catch (e) { console.warn(e); }
         return base;
     }
-    function saveConfig(cfg) {
-        const override = computeOverride(DEFAULT_CFG, cfg);
-        localStorage.setItem(OVERRIDE_KEY, JSON.stringify(override));
+    async function saveConfig(cfg) {
+        if (serverMode) {
+            await apiRequest('/admin/config', { method: 'POST', body: { lang: currentLang, config: cfg } }, true);
+            serverConfigs[currentLang] = cloneJSON(cfg);
+            window.GOLDENROCK_SERVER_CONFIGS = serverConfigs;
+            return;
+        }
+        const override = computeOverride(languageBaseConfig(currentLang), cfg);
+        localStorage.setItem(OVERRIDE_KEY + '_' + currentLang, JSON.stringify(override));
+        if (currentLang === 'zh_CN') localStorage.setItem(OVERRIDE_KEY, JSON.stringify(override));
     }
     function computeOverride(base, cur) {
         const out = {};
@@ -337,7 +402,13 @@
     }
 
     /* ============ AUTH ============ */
-    function checkAuth() {
+    async function checkAuth() {
+        if (serverMode) {
+            try {
+                await apiRequest('/admin/me', {}, false);
+                return true;
+            } catch (e) { return false; }
+        }
         try {
             const s = sessionStorage.getItem(AUTH_KEY);
             if (!s) return false;
@@ -356,7 +427,23 @@
     function setAuth() {
         sessionStorage.setItem(AUTH_KEY, JSON.stringify({ exp: Date.now() + 7200 * 1000, sig: signAuth() }));
     }
-    function clearAuth() { sessionStorage.removeItem(AUTH_KEY); }
+    function clearAuth() {
+        sessionStorage.removeItem(AUTH_KEY);
+        sessionStorage.removeItem('GOLDENROCK_ADMIN_CSRF');
+        csrfToken = '';
+    }
+
+    async function hydrateServerState() {
+        if (!serverMode) return;
+        try {
+            var cfgs = await apiRequest('/admin/configs', {}, false);
+            serverConfigs = Object.assign({}, serverConfigs, cfgs.configs || {});
+            var note = await apiRequest('/admin/notifications', {}, false);
+            notificationSettings = note.settings || {};
+            serverMessages = null;
+        } catch (e) {}
+        currentCfg = loadConfig();
+    }
 
     function isImageDataUrl(s) {
         return typeof s === 'string' && s.indexOf('data:image/') === 0;
@@ -433,8 +520,13 @@
         } catch (e) {}
     }
 
-    function init() {
-        if (!checkAuth()) {
+    async function init() {
+        serverMode = await detectServer();
+        if (serverMode) {
+            csrfToken = sessionStorage.getItem('GOLDENROCK_ADMIN_CSRF') || '';
+            if (await checkAuth()) await hydrateServerState();
+        }
+        if (!(await checkAuth())) {
             document.getElementById('loginView').style.display = 'flex';
             document.getElementById('adminView').style.display = 'none';
             renderBrandIcons();
@@ -449,18 +541,32 @@
         const form = document.getElementById('loginForm');
         const pwd = document.getElementById('loginPwd');
         const err = document.getElementById('loginError');
-        form.addEventListener('submit', function (e) {
+        form.addEventListener('submit', async function (e) {
             e.preventDefault();
             const expect = resolvePath(DEFAULT_CFG, 'admin.loginPassword') || resolvePath(currentCfg, 'admin.loginPassword') || 'admin123';
-            if (pwd.value === expect) {
+            if (serverMode) {
+                try {
+                    var result = await apiRequest('/auth/login', { method: 'POST', body: { password: pwd.value } }, false);
+                    csrfToken = result.csrf || '';
+                    sessionStorage.setItem('GOLDENROCK_ADMIN_CSRF', csrfToken);
+                    await hydrateServerState();
+                    toast('success', '登录成功', '正在进入内容管理后台…');
+                    setTimeout(enterAdmin, 350);
+                    return;
+                } catch (e) {
+                    err.textContent = e.status === 429 ? '尝试次数过多，请稍后再试。' : '密码错误，请重试。';
+                    err.style.display = 'block';
+                }
+            } else if (pwd.value === expect) {
                 setAuth();
                 toast('success', '登录成功', '正在进入内容管理后台…');
                 setTimeout(enterAdmin, 350);
+                return;
             } else {
                 err.style.display = 'block';
-                pwd.classList.add('shake');
-                setTimeout(function () { pwd.classList.remove('shake'); }, 300);
             }
+            pwd.classList.add('shake');
+            setTimeout(function () { pwd.classList.remove('shake'); }, 300);
         });
     }
 
@@ -503,6 +609,7 @@
             document.getElementById('pageDesc').textContent = item ? item.desc : '';
         }
         renderForm(id);
+        if (id === 'messages') refreshMessagesFromServer();
         closeSidebar();
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }
@@ -540,6 +647,10 @@
         const container = document.getElementById('formContainer');
         if (tabId === 'messages') {
             renderMessagesView();
+            return;
+        }
+        if (tabId === 'notifications') {
+            renderNotificationsView();
             return;
         }
         const schema = FIELD_SCHEMAS[tabId] || [];
@@ -981,22 +1092,48 @@
         if (mask) mask.addEventListener('click', function () { closeSidebar(); });
         document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeSidebar(); });
 
-        document.getElementById('saveBtn').addEventListener('click', function () {
-            saveConfig(currentCfg);
-            dirty = false;
-            updateSaveStatus();
-            renderBrandIcons();
-            toast('success', '已保存', '更改已保存到浏览器，官网实时生效（此浏览器 localStorage）');
+        var langSelect = document.getElementById('adminLangSelect');
+        if (langSelect) {
+            langSelect.value = currentLang;
+            langSelect.addEventListener('change', function () {
+                if (dirty && !confirm('有未保存的更改，确认切换语言？')) {
+                    langSelect.value = currentLang;
+                    return;
+                }
+                currentLang = langSelect.value;
+                try { localStorage.setItem('GR_ADMIN_LANG', currentLang); } catch (e) {}
+                currentCfg = loadConfig();
+                dirty = false;
+                updateSaveStatus();
+                rerenderCurrentTab();
+                renderBrandIcons();
+            });
+        }
+        document.getElementById('saveBtn').addEventListener('click', async function () {
+            try {
+                var notificationResult = null;
+                if (activeTab === 'notifications') notificationResult = await saveNotifications();
+                else await saveConfig(currentCfg);
+                dirty = false;
+                updateSaveStatus();
+                renderBrandIcons();
+                toast('success', notificationResult && notificationResult.passwordChanged ? '密码已修改' : '已发布', notificationResult && notificationResult.passwordChanged ? '请使用新密码重新登录。' : (serverMode ? '设置已保存到服务器。' : '更改已保存到当前浏览器。'));
+                if (notificationResult && notificationResult.passwordChanged) setTimeout(function () { location.reload(); }, 800);
+            } catch (e) {
+                toast('error', '保存失败', e.message || '服务器暂时不可用，请稍后重试。');
+            }
         });
-        document.getElementById('resetBtn').addEventListener('click', function () {
+        document.getElementById('resetBtn').addEventListener('click', async function () {
             if (!confirm('确认恢复所有内容为默认配置？当前未保存和已保存的更改都会丢失。')) return;
-            localStorage.removeItem(OVERRIDE_KEY);
-            currentCfg = cloneJSON(DEFAULT_CFG);
+            currentCfg = languageBaseConfig(currentLang);
             dirty = false;
             updateSaveStatus();
             rerenderCurrentTab();
             renderBrandIcons();
-            toast('success', '已恢复默认', '所有内容已重置为出厂配置');
+            try {
+                if (serverMode && activeTab !== 'notifications') await saveConfig(currentCfg);
+                toast('success', '已恢复默认', serverMode ? '默认内容已发布到服务器。' : '所有内容已重置为出厂配置');
+            } catch (e) { toast('error', '恢复失败', e.message || '服务器暂时不可用。'); }
         });
         document.getElementById('previewBtn').addEventListener('click', function () {
             closeSidebar();
@@ -1681,6 +1818,71 @@
         }
     });
 
+    // ================= 通知与账号设置 =================
+    function renderNotificationsView() {
+        var container = document.getElementById('formContainer');
+        if (!container) return;
+        var s = notificationSettings || {};
+        container.innerHTML =
+            '<div class="form-section"><h3 class="form-section-title">联系表单邮件通知</h3>' +
+            '<p class="form-section-desc">留言会始终保存到服务器。配置 SMTP 后，新的留言才会额外发送到收件邮箱；密码不会显示在页面或公开配置中。</p>' +
+            '<div class="form-grid">' +
+              '<div class="form-group"><label for="notifyEnabled">启用邮件通知</label><label class="form-check-inline"><input type="checkbox" id="notifyEnabled" ' + (s.enabled === '1' ? 'checked' : '') + '><span>新留言发送邮件</span></label></div>' +
+              '<div class="form-group"><label for="notifyRecipient">收件邮箱</label><input id="notifyRecipient" type="email" value="' + escAttr(s.recipient_email || '') + '" placeholder="以后填写，例如 contact@example.com"><p class="field-hint">客户留言通知发送到这里。</p></div>' +
+              '<div class="form-group"><label for="notifyHost">SMTP 服务器</label><input id="notifyHost" value="' + escAttr(s.smtp_host || '') + '" placeholder="例如 smtp.example.com"></div>' +
+              '<div class="form-group"><label for="notifyPort">SMTP 端口</label><input id="notifyPort" type="number" value="' + escAttr(s.smtp_port || '587') + '"></div>' +
+              '<div class="form-group"><label for="notifySecurity">SMTP 加密</label><select id="notifySecurity"><option value="starttls" ' + (s.smtp_security !== 'ssl' ? 'selected' : '') + '>STARTTLS（587）</option><option value="ssl" ' + (s.smtp_security === 'ssl' ? 'selected' : '') + '>SSL（465）</option></select></div>' +
+              '<div class="form-group"><label for="notifyUser">SMTP 用户名</label><input id="notifyUser" value="' + escAttr(s.smtp_user || '') + '"></div>' +
+              '<div class="form-group"><label for="notifyPassword">SMTP 授权码 / 密码</label><input id="notifyPassword" type="password" value="" placeholder="' + (s.smtp_password_configured === '1' ? '已配置，留空表示不修改' : '尚未配置') + '"></div>' +
+              '<div class="form-group"><label>验证邮件</label><button type="button" id="notifyTestBtn" class="admin-btn-outline">保存后发送测试邮件</button><p class="field-hint">先点击“保存更改”，再点击测试按钮。只有测试成功后才建议正式启用。</p></div>' +
+            '</div></div>' +
+            '<div class="form-section"><h3 class="form-section-title">管理员密码</h3>' +
+            '<p class="form-section-desc">建议首次登录后立即更换。新密码至少 10 位。</p>' +
+            '<div class="form-grid">' +
+              '<div class="form-group"><label for="currentAdminPassword">当前密码</label><input id="currentAdminPassword" type="password" autocomplete="current-password"></div>' +
+              '<div class="form-group"><label for="newAdminPassword">新密码</label><input id="newAdminPassword" type="password" autocomplete="new-password"></div>' +
+              '<div class="form-group"><label for="confirmAdminPassword">确认新密码</label><input id="confirmAdminPassword" type="password" autocomplete="new-password"></div>' +
+            '</div></div>';
+        ['notifyEnabled', 'notifyRecipient', 'notifyHost', 'notifyPort', 'notifySecurity', 'notifyUser', 'notifyPassword', 'currentAdminPassword', 'newAdminPassword', 'confirmAdminPassword'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) el.addEventListener('input', function () { dirty = true; updateSaveStatus(); });
+        });
+        var testBtn = document.getElementById('notifyTestBtn');
+        if (testBtn) testBtn.addEventListener('click', async function () {
+            if (dirty) { toast('error', '请先保存', '先点击“保存更改”，再发送测试邮件。'); return; }
+            try {
+                await apiRequest('/admin/notifications/test', { method: 'POST' }, true);
+                toast('success', '测试邮件已发送', '请检查收件箱和垃圾邮件。');
+            } catch (e) { toast('error', '测试失败', e.message || '请检查 SMTP 配置。'); }
+        });
+    }
+
+    async function saveNotifications() {
+        if (!serverMode) throw new Error('通知设置需要服务器后端。');
+        var newPassword = (document.getElementById('newAdminPassword') || {}).value || '';
+        var confirmPassword = (document.getElementById('confirmAdminPassword') || {}).value || '';
+        if (newPassword || confirmPassword) {
+            if (newPassword.length < 10 || newPassword !== confirmPassword) throw new Error('新密码至少 10 位，且两次输入必须一致。');
+            var currentPassword = (document.getElementById('currentAdminPassword') || {}).value || '';
+            await apiRequest('/admin/password', { method: 'POST', body: { current: currentPassword, new: newPassword } }, true);
+            csrfToken = '';
+            clearAuth();
+            return { passwordChanged: true };
+        }
+        var passwordEl = document.getElementById('notifyPassword');
+        var payload = {
+            enabled: document.getElementById('notifyEnabled').checked ? '1' : '0',
+            recipient_email: document.getElementById('notifyRecipient').value.trim(),
+            smtp_host: document.getElementById('notifyHost').value.trim(),
+            smtp_port: document.getElementById('notifyPort').value.trim() || '587',
+            smtp_security: document.getElementById('notifySecurity').value,
+            smtp_user: document.getElementById('notifyUser').value.trim(),
+            smtp_password: passwordEl.value
+        };
+        notificationSettings = (await apiRequest('/admin/notifications', { method: 'POST', body: payload }, true)).settings || notificationSettings;
+        return { passwordChanged: false };
+    }
+
     // ================= 留言咨询：数据层 =================
     var MESSAGES_KEY = 'GOLDENROCK_CONTACT_MESSAGES';
     var MESSAGES_STATUS = {
@@ -1690,14 +1892,40 @@
         deleted:  { label: '已删除', cls: 'status-deleted', dot: '#9ca3af' }
     };
     function loadMessages() {
+        if (Array.isArray(serverMessages)) return serverMessages.slice();
         try {
             var raw = localStorage.getItem(MESSAGES_KEY);
             var arr = raw ? JSON.parse(raw) : [];
             return Array.isArray(arr) ? arr : [];
         } catch (e) { return []; }
     }
+    async function refreshMessagesFromServer() {
+        if (!serverMode) return;
+        try {
+            var result = await apiRequest('/admin/messages', {}, false);
+            serverMessages = Array.isArray(result.messages) ? result.messages.map(function (m) {
+                return Object.assign({}, m, { ts: m.ts || m.created_at, ua: m.ua || m.user_agent || '' });
+            }) : [];
+            if (activeTab === 'messages') renderMessagesView();
+        } catch (e) {
+            if (activeTab === 'messages') toast('error', '留言读取失败', e.message || '服务器暂时不可用。');
+        }
+    }
     function saveMessages(arr) {
         try { localStorage.setItem(MESSAGES_KEY, JSON.stringify(arr || [])); } catch (e) {}
+    }
+    async function saveMessageStatusRemote(id, status) {
+        var result = await apiRequest('/admin/messages/' + encodeURIComponent(id), { method: 'PATCH', body: { status: status } }, true);
+        if (Array.isArray(serverMessages)) {
+            var item = serverMessages.find(function (m) { return m.id === id; });
+            if (item) item.status = status;
+        }
+        return result;
+    }
+    async function purgeMessageRemote(id) {
+        var result = await apiRequest('/admin/messages/' + encodeURIComponent(id), { method: 'DELETE' }, true);
+        if (Array.isArray(serverMessages)) serverMessages = serverMessages.filter(function (m) { return m.id !== id; });
+        return result;
     }
     function messagesStats() {
         var arr = loadMessages();
@@ -1759,7 +1987,7 @@
         if (!filtered.length) {
             tableRows = '<tr><td colspan="10" style="text-align:center;padding:56px 16px;color:#7a8699;">' +
                         '<div style="font-size:36px;margin-bottom:10px;">📭</div>' +
-                        '<div>暂无符合条件的留言。<br><span style="font-size:12px;opacity:.75;">提示：由于无后端数据库，数据保存在访问者浏览器 localStorage，同一浏览器/设备才能看到。</span></div>' +
+                        '<div>暂无符合条件的留言。<br><span style="font-size:12px;opacity:.75;">' + (serverMode ? '客户提交的留言会统一保存在服务器。' : '开发模式下数据保存在当前浏览器。') + '</span></div>' +
                         '</td></tr>';
         } else {
             tableRows = filtered.map(function (m, i) {
@@ -1821,29 +2049,29 @@
               '<th>留言摘要</th><th style="width:96px;">状态</th><th style="width:258px;">操作</th>' +
             '</tr></thead><tbody>' + tableRows + '</tbody></table></div>' +
             '<style>' +
-            '.msg-toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:16px;}' +
-            '.msg-toolbar-left{display:flex;flex-direction:column;gap:12px;flex:1 1 360px;}' +
-            '.msg-toolbar-right{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}' +
-            '.msg-search-wrap{position:relative;max-width:520px;}' +
+            '.msg-toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;flex-wrap:wrap;margin-bottom:22px;padding:2px 2px 0;}' +
+            '.msg-toolbar-left{display:flex;flex-direction:column;gap:14px;flex:1 1 520px;min-width:320px;}' +
+            '.msg-toolbar-right{display:flex;align-items:center;justify-content:flex-end;gap:16px;flex:0 1 auto;flex-wrap:wrap;padding-top:2px;}' +
+            '.msg-search-wrap{position:relative;width:min(100%,680px);}' +
             '.msg-search-wrap input{width:100%;padding:10px 14px 10px 36px;border-radius:12px;border:1px solid #dde2ea;background:#fff;font-size:14px;outline:none;transition:border-color .15s;}' +
             '.msg-search-wrap input:focus{border-color:#C9A961;}' +
             '.msg-search-ico{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:#9aa4b2;}' +
             '.msg-chip-row{display:flex;flex-wrap:wrap;gap:8px;}' +
             '.msg-stat{font-size:13px;color:#5b6676;}' +
             '.msg-stat b{color:#0A1628;}' +
-            '.msg-table-wrap{background:#fff;border:1px solid #e6e8ee;border-radius:14px;overflow:auto;}' +
-            '.msg-table{width:100%;border-collapse:collapse;font-size:13px;}' +
-            '.msg-table th{background:#f7f9fc;text-align:left;padding:12px 14px;color:#4b5563;font-weight:600;border-bottom:1px solid #e6e8ee;white-space:nowrap;}' +
-            '.msg-table td{padding:12px 14px;border-bottom:1px solid #f0f2f6;vertical-align:top;}' +
+            '.msg-table-wrap{background:#fff;border:1px solid #e6e8ee;border-radius:14px;overflow:auto;box-shadow:0 2px 8px rgba(10,22,40,.03);}' +
+            '.msg-table{width:100%;min-width:1240px;border-collapse:separate;border-spacing:0;font-size:13px;table-layout:auto;}' +
+            '.msg-table th{background:#f7f9fc;text-align:left;padding:14px 16px;color:#4b5563;font-weight:700;border-bottom:1px solid #e6e8ee;white-space:nowrap;position:sticky;top:0;z-index:1;}' +
+            '.msg-table td{padding:16px;border-bottom:1px solid #f0f2f6;vertical-align:top;line-height:1.65;}' +
             '.msg-table tr.msg-row{cursor:pointer;transition:background .15s;}' +
             '.msg-table tr.msg-row:hover{background:#fafbfe;}' +
             '.msg-table tr.msg-row.open{background:#fff8ec;}' +
             '.msg-table tr.msg-row.open td{border-bottom:1px solid transparent;}' +
             '.msg-table tr.msg-detail-row{display:none;}' +
             '.msg-table tr.msg-detail-row.open{display:table-row;}' +
-            '.msg-table tr.msg-detail-row td{padding:14px 24px 22px;background:#fff8ec;border-bottom:1px solid #f0f2f6;}' +
-            '.msg-detail-inner{max-width:1200px;}' +
-            '.msg-detail-grid{display:grid;grid-template-columns:1fr;gap:10px;}' +
+            '.msg-table tr.msg-detail-row td{padding:18px 28px 24px;background:#fff8ec;border-bottom:1px solid #f0f2f6;}' +
+            '.msg-detail-inner{max-width:1440px;}' +
+            '.msg-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:12px 28px;}' +
             '.msg-detail-kv{display:flex;gap:14px;align-items:flex-start;}' +
             '.msg-detail-kv .kv-k{flex:0 0 88px;color:#7a8699;font-weight:600;padding-top:2px;}' +
             '.msg-detail-kv .kv-v{flex:1;color:#0A1628;word-break:break-word;}' +
@@ -1853,14 +2081,15 @@
             '.msg-status-chip.status-read{background:#eff6ff;color:#1e40af;--dot:#3b82f6;}' +
             '.msg-status-chip.status-replied{background:#ecfdf5;color:#065f46;--dot:#10b981;}' +
             '.msg-status-chip.status-deleted{background:#f4f5f7;color:#4b5563;--dot:#9ca3af;}' +
-            '.msg-ops{display:flex;flex-wrap:wrap;gap:6px;}' +
-            '.op-btn{padding:4px 10px;border-radius:8px;border:1px solid #dde2ea;background:#fff;font-size:12px;cursor:pointer;color:#0A1628;transition:all .12s;white-space:nowrap;}' +
+            '.msg-ops{display:flex;flex-wrap:wrap;gap:7px;min-width:190px;}' +
+            '.op-btn{padding:6px 11px;border-radius:8px;border:1px solid #dde2ea;background:#fff;font-size:12px;cursor:pointer;color:#0A1628;transition:all .12s;white-space:nowrap;}' +
             '.op-btn:hover{border-color:#C9A961;color:#8a6e2d;}' +
             '.op-btn.op-reply{color:#065f46;border-color:#10b981;}' +
             '.op-btn.op-reply:hover{background:#ecfdf5;}' +
             '.op-btn.op-del:hover{color:#b91c1c;border-color:#fca5a5;background:#fef2f2;}' +
             '@media (max-width:768px){' +
               '.msg-table th:nth-child(6),.msg-table td:nth-child(6),.msg-table th:nth-child(3),.msg-table td:nth-child(3){display:none;}' +
+              '.msg-detail-grid{grid-template-columns:1fr;}' +
               '.msg-detail-kv{flex-direction:column;gap:4px;}' +
               '.msg-detail-kv .kv-k{flex:0 0 auto;}' +
             '}' +
@@ -1907,7 +2136,7 @@
             });
         });
         container.querySelectorAll('tr.msg-row [data-act]').forEach(function (btn) {
-            btn.addEventListener('click', function (e) {
+            btn.addEventListener('click', async function (e) {
                 e.stopPropagation();
                 var id = btn.getAttribute('data-id') || '';
                 var act = btn.getAttribute('data-act') || '';
@@ -1916,12 +2145,16 @@
                 if (idx < 0) return;
                 if (act === 'purge') {
                     if (!confirm('确定要【彻底删除】这条留言吗？删除后无法恢复。')) return;
-                    arr.splice(idx, 1);
-                    saveMessages(arr);
+                    try {
+                        if (serverMode) await purgeMessageRemote(id);
+                        else { arr.splice(idx, 1); saveMessages(arr); }
+                    } catch (err) { toast('error', '删除失败', err.message || '服务器暂时不可用。'); return; }
                     toast('success', '已彻底删除', '该留言已永久删除');
                 } else {
-                    arr[idx].status = act;
-                    saveMessages(arr);
+                    try {
+                        if (serverMode) await saveMessageStatusRemote(id, act);
+                        else { arr[idx].status = act; saveMessages(arr); }
+                    } catch (err) { toast('error', '状态更新失败', err.message || '服务器暂时不可用。'); return; }
                     var lbl = MESSAGES_STATUS[act] ? MESSAGES_STATUS[act].label : act;
                     toast('success', '状态变更', '已标记为「' + lbl + '」');
                 }

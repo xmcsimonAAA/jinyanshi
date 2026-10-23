@@ -1,0 +1,23 @@
+[Unit]
+Description=GoldenRock website API
+After=network.target
+
+[Service]
+Type=simple
+User=goldenrock
+Group=goldenrock
+WorkingDirectory=/opt/goldenrock/backend
+Environment=GOLDENROCK_DATA_DIR=/var/lib/goldenrock
+Environment=GOLDENROCK_API_HOST=127.0.0.1
+Environment=GOLDENROCK_API_PORT=9100
+ExecStart=/usr/bin/python3 /opt/goldenrock/backend/app.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/goldenrock
+
+[Install]
+WantedBy=multi-user.target

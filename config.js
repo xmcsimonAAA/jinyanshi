@@ -398,8 +398,5 @@ window.GOLDENROCK_CONFIG = {
         }
       ]
     }
-  },
-  admin: {
-    loginPassword: "admin123"
   }
 };

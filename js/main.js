@@ -701,42 +701,42 @@
             '<path d="M9 2C12.866 2 16 5.13401 16 9C16 11.087 15.0903 12.9814 13.6262 14.3155" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
             '</svg> ' + _t('ui.form.submitLoading', '提交中...');
 
-        setTimeout(function () {
+        var phoneEl = form.querySelector('[name="phone"]');
+        var svcEl = form.querySelector('[name="service"]');
+        var payload = {
+            name: name || '',
+            email: email || '',
+            phone: phoneEl ? (phoneEl.value || '') : '',
+            service: svcEl ? (svcEl.value || '') : '',
+            message: message || '',
+            lang: (window.I18N && window.I18N.activeLang) || 'zh_CN'
+        };
+        fetch('/api/messages', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }).then(function (res) {
+            if (!res.ok) throw new Error('message submit failed');
+            return res.json();
+        }).then(function () {
             submitBtn.innerHTML =
                 '<svg width="18" height="18" viewBox="0 0 18 18" fill="none">' +
                 '<path d="M3 9L7.5 13.5L15 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
                 '</svg> ' + _t('ui.form.submitSuccessBtn', '提交成功');
             submitBtn.style.background = 'linear-gradient(135deg, #4CAF50, #45a049)';
-
-            try {
-                var phoneEl = form.querySelector('[name="phone"]');
-                var svcEl = form.querySelector('[name="service"]');
-                var msg = {
-                    id: Date.now().toString(36) + Math.floor(Math.random() * 900 + 100),
-                    ts: Date.now(),
-                    lang: (window.I18N && window.I18N.activeLang) || '',
-                    ua: (navigator.userAgent || '').slice(0, 150),
-                    name: name || '',
-                    email: email || '',
-                    phone: phoneEl ? (phoneEl.value || '') : '',
-                    service: svcEl ? (svcEl.value || '') : '',
-                    message: message || '',
-                    status: 'new'
-                };
-                var arr = [];
-                try { arr = JSON.parse(localStorage.getItem('GOLDENROCK_CONTACT_MESSAGES') || '[]'); } catch (e) { arr = []; }
-                if (!Array.isArray(arr)) arr = [];
-                arr.unshift(msg);
-                localStorage.setItem('GOLDENROCK_CONTACT_MESSAGES', JSON.stringify(arr));
-            } catch (e) { /* 静默失败：提交视觉成功即可 */ }
-
             setTimeout(function () {
                 form.reset();
                 submitBtn.disabled = false;
                 submitBtn.innerHTML = originalText;
                 submitBtn.style.background = '';
             }, 2500);
-        }, 1200);
+        }).catch(function () {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = originalText;
+            submitBtn.style.background = '';
+            alert(_t('ui.form.submitFailed', '提交失败，请稍后再试或直接联系我们。'));
+        });
     }
 
     const styleEl = document.createElement('style');

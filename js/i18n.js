@@ -1026,6 +1026,7 @@
     function getCfgOverrides(lang) {
         try {
             var l = normLang(lang || _activeLang) || DEFAULT_LANG;
+            if (window.GOLDENROCK_SERVER_CONFIGS && window.GOLDENROCK_SERVER_CONFIGS[l]) return {};
             return cloneJSON(DICT_CFG_OVERRIDES[l] || {});
         } catch (e) { return {}; }
     }
@@ -1113,6 +1114,10 @@
 
     function getConfig() {
         var base = cloneJSON(window.GOLDENROCK_CONFIG || {});
+        var serverCfgs = window.GOLDENROCK_SERVER_CONFIGS || {};
+        if (serverCfgs[_activeLang] && typeof serverCfgs[_activeLang] === 'object') {
+            return cloneJSON(serverCfgs[_activeLang]);
+        }
         var langDict = DICT[_activeLang] || {};
         Object.keys(langDict).forEach(function (k) {
             if (k === "ui") return;
@@ -1131,6 +1136,14 @@
             } catch (e) {}
         }
         return base;
+    }
+
+    function rawBaseCfg() {
+        var serverCfgs = window.GOLDENROCK_SERVER_CONFIGS || {};
+        if (serverCfgs[_activeLang] && typeof serverCfgs[_activeLang] === 'object') {
+            return cloneJSON(serverCfgs[_activeLang]);
+        }
+        return cloneJSON(window.GOLDENROCK_CONFIG || {});
     }
 
     function isFormDirty() {
@@ -1451,6 +1464,7 @@
         detectLang: detectLang,
         t: t,
         getConfig: getConfig,
+        ___rawBaseCfg: rawBaseCfg,
         switchLang: switchLang,
         applyI18nAttrs: applyI18nAttrs,
         setSwitcherActive: setSwitcherActive,
